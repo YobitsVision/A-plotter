@@ -74,7 +74,7 @@ fn main() {
                 .short("i")
                 .long("id")
                 .value_name("numeric_ID")
-                .help("your numeric Account ID")
+                .help("Your numeric Account ID")
                 .takes_value(true)
                 .required_unless("ocl-devices"),
         )
@@ -83,60 +83,74 @@ fn main() {
                 .short("s")
                 .long("sn")
                 .value_name("start_nonce")
-                .help("where you want to start plotting")
+                .help("Starting nonce")
                 .takes_value(true)
-                .required_unless("ocl-devices"),
+                .default_value("0"),
         )
         .arg(
             Arg::with_name("nonces")
                 .short("n")
-                .long("n")
-                .value_name("nonces")
-                .help("how many nonces you want to plot")
+                .long("nonces")
+                .value_name("total_nonces")
+                .help("Total number of nonces to plot (can span multiple files/drives)")
                 .takes_value(true)
-                .required_unless("ocl-devices"),
-        )
-        .arg(
-            Arg::with_name("path")
-                .short("p")
-                .long("path")
-                .value_name("path")
-                .help("final directory for plot file (HDD storage)")
-                .takes_value(true)
-                .required(false),
+                .required(true),
         )
         .arg(
             Arg::with_name("temp")
                 .short("t")
                 .long("temp")
                 .value_name("temp_dir")
-                .help("temporary SSD directory for fast plotting (file will be moved to --path after completion)")
+                .help("SSD directory for fast temporary plotting (highly recommended)")
                 .takes_value(true)
                 .required(false),
+        )
+        .arg(
+            Arg::with_name("drives")
+                .short("D")
+                .long("drives")
+                .value_name("path1,path2,...")
+                .help("Comma-separated list of final HDD plot directories (queue will cycle through them)")
+                .takes_value(true)
+                .required_unless("path"),
+        )
+        .arg(
+            Arg::with_name("path")
+                .short("p")
+                .long("path")
+                .value_name("single_path")
+                .help("Single final directory (legacy mode, no queue)")
+                .takes_value(true)
+                .required_unless("drives"),
+        )
+        .arg(
+            Arg::with_name("plotsize")
+                .long("plotsize")
+                .value_name("nonces")
+                .help("Nonces per individual plot file (default: 4194304 ≈ 1 TiB)")
+                .takes_value(true)
+                .default_value("4194304"),
         )
         .arg(
             Arg::with_name("memory")
                 .short("m")
                 .long("mem")
                 .value_name("memory")
-                .help("maximum memory usage (optional)")
-                .takes_value(true)
-                .required(false),
+                .help("Maximum memory usage (optional)")
+                .takes_value(true),
         )
         .args(&[
             Arg::with_name("cpu")
                 .short("c")
                 .long("cpu")
                 .value_name("threads")
-                .help("maximum cpu threads you want to use (optional)")
-                .required(false)
+                .help("CPU threads to use")
                 .takes_value(true),
             #[cfg(feature = "opencl")]
             Arg::with_name("gpu")
                 .short("g")
                 .long("gpu")
                 .value_name("platform_id:device_id:cores")
-                .help("GPU(s) you want to use for plotting (optional)")
                 .multiple(true)
                 .takes_value(true),
         ])
@@ -158,7 +172,7 @@ fn main() {
             Arg::with_name("zero-copy")
                 .short("z")
                 .long("zcb")
-                .help("Enables zero copy buffers for shared mem (integrated) gpus")
+                .help("Enables zero copy buffers for integrated GPUs")
                 .global(true),
         );
 
@@ -175,39 +189,32 @@ fn main() {
     }
 
     let numeric_id = value_t!(matches, "numeric id", u64).unwrap_or_else(|e| e.exit());
-    let start_nonce = value_t!(matches, "start nonce", u64).unwrap_or_else(|e| e.exit());
-    let nonces = value_t!(matches, "nonces", u64).unwrap_or_else(|e| e.exit());
-
-    // Determine final and temporary paths
-    let final_dir_str = value_t!(matches, "path", String).unwrap_or_else(|_| {
-        std::env::current_dir()
-            .unwrap()
-            .into_os_string()
-            .into_string()
-            .unwrap()
-    });
-    let final_dir = PathBuf::from(&final_dir_str);
+    let mut current_nonce = value_t!(matches, "start nonce", u64).unwrap_or_else(|e| e.exit());
+    let total_nonces = value_t!(matches, "nonces", u64).unwrap_or_else(|e| e.exit());
+    let plot_size_nonces = value_t!(matches, "plotsize", u64).unwrap_or_else(|e| e.exit());
 
     let temp_dir: Option<PathBuf> = matches.value_of("temp").map(PathBuf::from);
 
-    // Effective output path passed to plotter
-    let effective_output_path = if let Some(ref temp) = temp_dir {
-        temp.clone()
+    // Determine final drives
+    let final_dirs: Vec<PathBuf> = if let Some(drives_str) = matches.value_of("drives") {
+        drives_str.split(',').map(|s| PathBuf::from(s.trim())).collect()
     } else {
-        final_dir.clone()
+        // Legacy single path
+        vec![PathBuf::from(
+            matches.value_of("path").unwrap_or("."),
+        )]
     };
 
-    let output_path_str = effective_output_path
-        .into_os_string()
-        .into_string()
-        .unwrap();
+    if final_dirs.is_empty() {
+        eprintln!("Error: No final plot directories specified.");
+        return;
+    }
 
     let mem = value_t!(matches, "memory", String).unwrap_or_else(|_| "0B".to_owned());
     let cpu_threads = value_t!(matches, "cpu", u8).unwrap_or(0u8);
 
     let gpus = if matches.occurrences_of("gpu") > 0 {
-        let gpu = values_t!(matches, "gpu", String);
-        Some(gpu.unwrap())
+        Some(values_t!(matches, "gpu", String).unwrap())
     } else {
         None
     };
@@ -226,67 +233,81 @@ fn main() {
         cpu_threads
     };
 
-    // Inform user
-    if temp_dir.is_some() {
-        println!("Plotting to SSD temp: {}", output_path_str);
-        println!("Will move to final dir after completion: {}", final_dir_str);
-    }
-
-    // Run plotting
     let p = Plotter::new();
-    p.run(PlotterTask {
-        numeric_id,
-        start_nonce,
-        nonces,
-        output_path: output_path_str,
-        mem,
-        cpu_threads,
-        gpus,
-        direct_io: !matches.is_present("disable direct i/o"),
-        async_io: !matches.is_present("disable async i/o"),
-        quiet: matches.is_present("non-verbosity"),
-        benchmark: matches.is_present("benchmark"),
-        zcb: matches.is_present("zero-copy"),
-    });
 
-    // After plotting: move file if temp was used
-    if let Some(temp_dir_path) = temp_dir {
-        // Construct expected filename: {id}_{start}_{nonces}_{scoops}
-        // Signum PoC2 uses 4096 scoops
+    let mut remaining = total_nonces;
+    let mut drive_index = 0;
+
+    println!("Starting queue: {} total nonces → {} plot files across {} drive(s)", total_nonces, (total_nonces + plot_size_nonces - 1) / plot_size_nonces, final_dirs.len());
+
+    while remaining > 0 {
+        let this_plot_nonces = remaining.min(plot_size_nonces);
+        let final_dir = &final_dirs[drive_index];
         let scoops = 4096;
-        let filename = format!("{}_{}_{}_{}", numeric_id, start_nonce, nonces, scoops);
+        let filename = format!("{}_{}_{}_{}", numeric_id, current_nonce, this_plot_nonces, scoops);
 
-        let temp_file = temp_dir_path.join(&filename);
-        let final_file = final_dir.join(&filename);
+        // Effective write path (SSD temp if provided)
+        let write_dir = temp_dir.as_ref().unwrap_or(final_dir);
+        let write_path = write_dir.join(&filename);
+        let output_path_str = write_dir
+            .clone()
+            .into_os_string()
+            .into_string()
+            .unwrap();
 
-        // Ensure final directory exists
-        if let Err(e) = fs::create_dir_all(&final_dir) {
-            eprintln!("Failed to create final directory: {}", e);
-            return;
+        println!("\nPlotting {} nonces → {} (to {})", this_plot_nonces, filename, write_path.display());
+
+        // Ensure write directory exists
+        if let Err(e) = fs::create_dir_all(write_dir) {
+            eprintln!("Failed to create write directory: {}", e);
+            break;
         }
 
-        println!("Plotting complete. Moving file to final destination...");
+        // Run plotting
+        p.run(PlotterTask {
+            numeric_id,
+            start_nonce: current_nonce,
+            nonces: this_plot_nonces,
+            output_path: output_path_str,
+            mem: mem.clone(),
+            cpu_threads,
+            gpus: gpus.clone(),
+            direct_io: !matches.is_present("disable direct i/o"),
+            async_io: !matches.is_present("disable async i/o"),
+            quiet: matches.is_present("non-verbosity"),
+            benchmark: matches.is_present("benchmark"),
+            zcb: matches.is_present("zero-copy"),
+        });
 
-        // Try rename first (fast, atomic if same filesystem)
-        if let Err(e) = fs::rename(&temp_file, &final_file) {
-            if e.kind() == std::io::ErrorKind::CrossesDevices || e.kind() == std::io::ErrorKind::PermissionDenied {
-                // Fallback: copy then delete
-                println!("Cross-device move detected. Copying instead...");
-                if let Err(e) = fs::copy(&temp_file, &final_file) {
-                    eprintln!("Copy failed: {}", e);
-                    return;
+        // Move to final drive if temp was used
+        if temp_dir.is_some() {
+            let final_file = final_dir.join(&filename);
+
+            if let Err(e) = fs::create_dir_all(final_dir) {
+                eprintln!("Failed to create final dir: {}", e);
+                break;
+            }
+
+            println!("Moving to final location: {}", final_file.display());
+
+            if let Err(e) = fs::rename(&write_path, &final_file) {
+                if e.kind() == std::io::ErrorKind::CrossesDevices {
+                    println!("Cross-device: copying instead...");
+                    if fs::copy(&write_path, &final_file).is_err() || fs::remove_file(&write_path).is_err() {
+                        eprintln!("Copy/delete failed — manual cleanup needed");
+                    }
+                } else {
+                    eprintln!("Move failed: {}", e);
                 }
-                if let Err(e) = fs::remove_file(&temp_file) {
-                    eprintln!("Failed to delete temp file (manual cleanup needed): {}", e);
-                }
-            } else {
-                eprintln!("Move failed: {}", e);
-                return;
             }
         }
 
-        println!("Plot successfully moved to: {}", final_file.display());
-    } else {
-        println!("Plotting complete.");
+        println!("Completed: {} → {}", filename, final_dir.display());
+
+        remaining -= this_plot_nonces;
+        current_nonce += this_plot_nonces;
+        drive_index = (drive_index + 1) % final_dirs.len();
     }
+
+    println!("\nAll plotting complete! Total nonces plotted: {}", total_nonces);
 }
