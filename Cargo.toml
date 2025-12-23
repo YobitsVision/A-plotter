@@ -32,6 +32,9 @@ stopwatch = "0.0.7"
 fs2 = "0.4.3"
 page_size = "0.4.1"
 aligned_alloc = "0.1.3"
+eframe = { version = "0.28", features = ["persistence"] }  # Latest stable as of late 2025
+egui_extras = { version = "0.28", features = ["all_loaders"] }
+serde = { version = "1", features = ["derive"] }  # For saving settings
 
 [target.'cfg(linux)'.dependencies]
 thread-priority = "0.1.0"
