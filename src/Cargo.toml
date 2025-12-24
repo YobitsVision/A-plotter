@@ -1,0 +1,55 @@
+[package]
+name = "signum-plotter"
+version = "2.6.0"
+license = "GPL-3.0"
+authors = ["jjos2372, forked from PoC Consortium"]
+description = """
+signum-plotter - a PoC2 plotter written in Rust
+"""
+repository = "https://github.com/signum-network/signum-plotter"
+documentation = "https://github.com/signum-network/signum-plotter"
+keywords = ["signum", "plotter", "rust", "cryptocurrency"]
+readme = "README.md"
+edition = "2018"
+
+[features]
+opencl = ["ocl-core"]
+simd = []
+
+[dependencies]
+crossbeam-channel = "0.3.6"
+ocl-core = { version = "0.11.1", optional = true } 
+clap = "2.32.0"
+raw-cpuid = "6.1.0"
+sys-info = "0.6.0"
+cfg-if = "0.1.6"
+pbr = "1.0.1"
+humanize-rs = "0.1.5"
+libc = "0.2.97"
+rayon = "1.0.3"
+core_affinity = "0.5.9"
+stopwatch = "0.0.7"
+fs2 = "0.4.3"
+page_size = "0.6"
+eframe = { version = "0.28", features = ["persistence"] }
+egui_extras = { version = "0.28", features = ["all_loaders"] }
+serde = { version = "1", features = ["derive"] }
+
+[target.'cfg(linux)'.dependencies]
+thread-priority = "0.1.0"
+
+[target.'cfg(windows)'.dependencies]
+winapi = { version = "0.3", features = ["std","fileapi","securitybaseapi"] }
+
+[build-dependencies]
+cc = "1.0"
+embed-resource = "2.4"
+
+[dev-dependencies]
+rust-crypto = "0.2.36"
+
+# === NEW SECTION: Force UAC elevation on Windows ===
+[package.metadata.winres]
+# This will embed a manifest that requests administrator privileges
+requested-execution-level = "requireAdministrator"
+ui-access = false
